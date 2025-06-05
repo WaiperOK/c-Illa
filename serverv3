@@ -1,0 +1,194 @@
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <cstring>
+#include <map>
+#include <sstream>
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <openssl/sha.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+std::map<std::string, std::string> users = {
+    {"admin", "5e884898da28047151d0e56f5fbfc1..."},
+    {"user", "12dff74e2fe2cf1c172..."} // SHA-256 hashed passwords
+};
+
+std::map<std::string, bool> protected_files = {
+    {"secret.txt", true},
+    {"confidential.dat", true}};
+
+std::mutex client_mutex;
+std::ofstream log_file("server.log", std::ios::app);
+
+void log(const std::string &message)
+{
+    std::lock_guard<std::mutex> lock(client_mutex);
+    log_file << message << std::endl;
+}
+
+std::string sha256(const std::string &str)
+{
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char *>(str.c_str()), str.size(), hash);
+
+    std::ostringstream oss;
+    for (unsigned char c : hash)
+        oss << std::hex << (int)c;
+
+    return oss.str();
+}
+
+bool authenticate(const std::string &username, const std::string &password)
+{
+    return users.count(username) && users[username] == sha256(password);
+}
+
+void send_file_stream(int sock, const std::string &filename)
+{
+    std::ifstream file(filename, std::ios::binary);
+    if (!file)
+    {
+        std::string response = "HTTP/1.0 404 Not Found\r\n\r\nERROR: File not found\n";
+        send(sock, response.c_str(), response.size(), 0);
+        return;
+    }
+
+    std::string header = "HTTP/1.0 200 OK\r\n\r\n";
+    send(sock, header.c_str(), header.size(), 0);
+
+    char buffer[4096];
+    while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0)
+    {
+        send(sock, buffer, file.gcount(), 0);
+    }
+}
+
+void handle_client(int sock, SSL *ssl)
+{
+    char buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
+    ssize_t len = SSL_read(ssl, buffer, sizeof(buffer) - 1);
+    if (len <= 0)
+    {
+        log("Client disconnected.");
+        close(sock);
+        return;
+    }
+    buffer[len] = '\0';
+
+    std::istringstream req_stream(buffer);
+    std::string line, filename, username, password;
+    bool first_line = true;
+
+    while (std::getline(req_stream, line))
+    {
+        if (first_line)
+        {
+            first_line = false;
+            filename = line.substr(4, line.find(' ', 4) - 4);
+        }
+        else if (line.rfind("Auth: ", 0) == 0)
+        {
+            std::istringstream auth_stream(line.substr(6));
+            std::getline(auth_stream, username, ':');
+            std::getline(auth_stream, password);
+        }
+    }
+
+    if (protected_files.count(filename) && protected_files[filename] && !authenticate(username, password))
+    {
+        std::string response = "HTTP/1.0 401 Unauthorized\r\n\r\nERROR: Unauthorized\n";
+        SSL_write(ssl, response.c_str(), response.size());
+        close(sock);
+        return;
+    }
+
+    send_file_stream(sock, filename);
+    close(sock);
+}
+
+SSL_CTX *initialize_ssl()
+{
+    SSL_library_init();           // Initialize OpenSSL
+    OpenSSL_add_all_algorithms(); // Load all encryption algorithms
+    SSL_load_error_strings();     // Load readable error messages
+
+    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
+    if (!ctx)
+    {
+        std::cerr << "SSL_CTX_new() error\n";
+        exit(EXIT_FAILURE);
+    }
+    SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM);
+    SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM);
+    return ctx;
+}
+
+int main()
+{
+    SSL_CTX *ctx = initialize_ssl();
+
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0)
+    {
+        std::cerr << "socket() error\n";
+        return 1;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(443); // Secure port
+    if (bind(server_fd, (sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        std::cerr << "bind() error\n";
+        return 1;
+    }
+    if (listen(server_fd, 5) < 0)
+    {
+        std::cerr << "listen() error\n";
+        return 1;
+    }
+
+    std::cout << "Secure server started on port 443\n";
+
+    std::vector<std::thread> threads;
+
+    while (true)
+    {
+        int sock = accept(server_fd, nullptr, nullptr);
+        if (sock < 0)
+        {
+            std::cerr << "accept() error\n";
+            continue;
+        }
+
+        SSL *ssl = SSL_new(ctx);
+        SSL_set_fd(ssl, sock);
+        if (SSL_accept(ssl) <= 0)
+        {
+            SSL_free(ssl);
+            close(sock);
+            continue;
+        }
+
+        std::lock_guard<std::mutex> lock(client_mutex);
+        threads.emplace_back(handle_client, sock, ssl);
+    }
+
+    for (auto &thread : threads)
+    {
+        if (thread.joinable())
+            thread.join();
+    }
+
+    SSL_CTX_free(ctx);
+    close(server_fd);
+    return 0;
+}
