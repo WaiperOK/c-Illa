@@ -1,0 +1,261 @@
+{
+	"auto_complete":
+	{
+		"selected_items":
+		[
+		]
+	},
+	"buffers":
+	[
+		{
+			"contents": "#include <iostream>\n#include <fstream>\n#include <string>\n#include <sys/socket.h>\n#include <netinet/in.h>\n#include <unistd.h>\n#include <cstring>\n#include <map>\n#include <sstream>\n#include <thread>\n#include <vector>\n#include <mutex>\n#include <openssl/evp.h>\n#include <openssl/bio.h>\n#include <openssl/buffer.h>\n\nstd::map<std::string, std::string> users = {\n    {\"admin\", \"password123\"},\n    {\"user\", \"mypassword\"}};\n\nstd::map<std::string, bool> protected_files = {\n    {\"secret.txt\", true},\n    {\"confidential.dat\", true}};\n\nstd::mutex client_mutex;\n\nstd::string base64_decode(const std::string &encoded)\n{\n    BIO *bio = BIO_new_mem_buf(encoded.data(), encoded.size());\n    BIO *b64 = BIO_new(BIO_f_base64());\n    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);\n    BIO_push(b64, bio);\n\n    char buffer[1024];\n    int len = BIO_read(b64, buffer, sizeof(buffer));\n    BIO_free_all(b64);\n\n    return std::string(buffer, len);\n}\n\nbool authenticate(const std::string &auth_header)\n{\n    if (auth_header.rfind(\"Basic \", 0) != 0)\n        return false;\n\n    std::string encoded_credentials = auth_header.substr(6);\n    std::string decoded = base64_decode(encoded_credentials);\n\n    size_t colon_pos = decoded.find(':');\n    if (colon_pos == std::string::npos)\n        return false;\n\n    std::string username = decoded.substr(0, colon_pos);\n    std::string password = decoded.substr(colon_pos + 1);\n\n    return users.count(username) && users[username] == password;\n}\n\nvoid handle_client(int sock)\n{\n    char buffer[1024];\n    memset(buffer, 0, sizeof(buffer));\n    ssize_t len = read(sock, buffer, sizeof(buffer) - 1);\n    if (len <= 0)\n    {\n        close(sock);\n        return;\n    }\n    buffer[len] = '\\0';\n\n    std::istringstream req_stream(buffer);\n    std::string line, filename, authorization;\n    bool first_line = true;\n\n    while (std::getline(req_stream, line))\n    {\n        if (first_line)\n        {\n            first_line = false;\n            if (line.rfind(\"GET \", 0) != 0)\n            {\n                const char *response = \"HTTP/1.0 400 Bad Request\\r\\n\\r\\nERROR: Bad request\\n\";\n                send(sock, response, strlen(response), 0);\n                close(sock);\n                return;\n            }\n            filename = line.substr(4, line.find(' ', 4) - 4);\n            filename.erase(0, filename.find_first_not_of(' '));\n        }\n        else if (line.rfind(\"Authorization: \", 0) == 0)\n        {\n            authorization = line.substr(15);\n        }\n    }\n\n    if (protected_files.count(filename) && protected_files[filename])\n    {\n        if (!authenticate(authorization))\n        {\n            const char *response = \"HTTP/1.0 401 Unauthorized\\r\\n\"\n                                   \"WWW-Authenticate: Basic realm=\\\"Secure Area\\\"\\r\\n\"\n                                   \"\\r\\nERROR: Unauthorized\\n\";\n            send(sock, response, strlen(response), 0);\n            close(sock);\n            return;\n        }\n    }\n\n    std::ifstream file(filename, std::ios::binary);\n    if (file)\n    {\n        const char *header = \"HTTP/1.0 200 OK\\r\\n\\r\\n\";\n        send(sock, header, strlen(header), 0);\n\n        char chunk[4096];\n        while (file.read(chunk, sizeof(chunk)) || file.gcount() > 0)\n        {\n            send(sock, chunk, file.gcount(), 0);\n        }\n    }\n    else\n    {\n        const char *response = \"HTTP/1.0 404 Not Found\\r\\n\\r\\nERROR: File not found\\n\";\n        send(sock, response, strlen(response), 0);\n    }\n\n    close(sock);\n}\n\nint main()\n{\n    int server_fd = socket(AF_INET, SOCK_STREAM, 0);\n    if (server_fd < 0)\n    {\n        std::cerr << \"socket() error\\n\";\n        return 1;\n    }\n\n    sockaddr_in addr{};\n    addr.sin_family = AF_INET;\n    addr.sin_addr.s_addr = INADDR_ANY;\n    addr.sin_port = htons(4000);\n    if (bind(server_fd, (sockaddr *)&addr, sizeof(addr)) < 0)\n    {\n        std::cerr << \"bind() error\\n\";\n        return 1;\n    }\n    if (listen(server_fd, 5) < 0)\n    {\n        std::cerr << \"listen() error\\n\";\n        return 1;\n    }\n    std::cout << \"Server started on port 4000\\n\";\n\n    std::vector<std::thread> threads;\n\n    while (true)\n    {\n        int sock = accept(server_fd, nullptr, nullptr);\n        if (sock < 0)\n        {\n            std::cerr << \"accept() error\\n\";\n            continue;\n        }\n\n        std::lock_guard<std::mutex> lock(client_mutex);\n        threads.emplace_back(handle_client, sock);\n    }\n\n    for (auto &thread : threads)\n    {\n        if (thread.joinable())\n            thread.join();\n    }\n\n    close(server_fd);\n    return 0;\n}\n",
+			"settings":
+			{
+				"buffer_size": 4524,
+				"line_ending": "Unix",
+				"name": "#include <iostream>"
+			}
+		},
+		{
+			"file": "/home/illya/Desktop/untitled",
+			"settings":
+			{
+				"buffer_size": 0,
+				"encoding": "UTF-8",
+				"line_ending": "Unix"
+			}
+		}
+	],
+	"build_system": "Packages/C++/C++ Single File.sublime-build",
+	"build_system_choices":
+	[
+		[
+			[
+				[
+					"Packages/C++/C++ Single File.sublime-build",
+					""
+				],
+				[
+					"Packages/C++/C++ Single File.sublime-build",
+					"Run"
+				]
+			],
+			[
+				"Packages/C++/C++ Single File.sublime-build",
+				"Run"
+			]
+		]
+	],
+	"build_varint": "",
+	"command_palette":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"console":
+	{
+		"height": 0.0,
+		"history":
+		[
+		]
+	},
+	"distraction_free":
+	{
+		"menu_visible": true,
+		"show_minimap": false,
+		"show_open_files": false,
+		"show_tabs": false,
+		"side_bar_visible": false,
+		"status_bar_visible": false
+	},
+	"file_history":
+	[
+	],
+	"find":
+	{
+		"height": 0.0
+	},
+	"find_in_files":
+	{
+		"height": 0.0,
+		"where_history":
+		[
+		]
+	},
+	"find_state":
+	{
+		"case_sensitive": false,
+		"find_history":
+		[
+		],
+		"highlight": true,
+		"in_selection": false,
+		"preserve_case": false,
+		"regex": false,
+		"replace_history":
+		[
+		],
+		"reverse": false,
+		"show_context": true,
+		"use_buffer2": true,
+		"whole_word": false,
+		"wrap": true
+	},
+	"groups":
+	[
+		{
+			"selected": 0,
+			"sheets":
+			[
+				{
+					"buffer": 0,
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 4524,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								125,
+								125
+							]
+						],
+						"settings":
+						{
+							"auto_name": "#include <iostream>",
+							"syntax": "Packages/Text/Plain text.tmLanguage",
+							"tab_size": 4,
+							"translate_tabs_to_spaces": true
+						},
+						"translation.x": 0.0,
+						"translation.y": 2652.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 0,
+					"type": "text"
+				},
+				{
+					"buffer": 1,
+					"file": "/home/illya/Desktop/untitled",
+					"semi_transient": false,
+					"settings":
+					{
+						"buffer_size": 0,
+						"regions":
+						{
+						},
+						"selection":
+						[
+							[
+								0,
+								0
+							]
+						],
+						"settings":
+						{
+							"syntax": "Packages/Text/Plain text.tmLanguage"
+						},
+						"translation.x": 0.0,
+						"translation.y": 0.0,
+						"zoom_level": 1.0
+					},
+					"stack_index": 1,
+					"type": "text"
+				}
+			]
+		}
+	],
+	"incremental_find":
+	{
+		"height": 0.0
+	},
+	"input":
+	{
+		"height": 0.0
+	},
+	"layout":
+	{
+		"cells":
+		[
+			[
+				0,
+				0,
+				1,
+				1
+			]
+		],
+		"cols":
+		[
+			0.0,
+			1.0
+		],
+		"rows":
+		[
+			0.0,
+			1.0
+		]
+	},
+	"menu_visible": true,
+	"output.exec":
+	{
+		"height": 120.0
+	},
+	"output.find_results":
+	{
+		"height": 0.0
+	},
+	"pinned_build_system": "Packages/C++/C++ Single File.sublime-build",
+	"project": "Server2.sublime-project",
+	"replace":
+	{
+		"height": 0.0
+	},
+	"save_all_on_build": true,
+	"select_file":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"select_project":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"select_symbol":
+	{
+		"height": 0.0,
+		"last_filter": "",
+		"selected_items":
+		[
+		],
+		"width": 0.0
+	},
+	"selected_group": 0,
+	"settings":
+	{
+	},
+	"show_minimap": true,
+	"show_open_files": false,
+	"show_tabs": true,
+	"side_bar_visible": true,
+	"side_bar_width": 150.0,
+	"status_bar_visible": true,
+	"template_settings":
+	{
+	}
+}
