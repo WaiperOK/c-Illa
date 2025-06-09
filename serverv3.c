@@ -17,17 +17,18 @@
 #include <algorithm>
 
 std::map<std::string, std::string> users = {
-    {"admin", "5e884898da28047151d0e56f5fbfc1..."},
-    {"user", "12dff74e2fe2cf1c172..."}}; // SHA-256 hashed passwords
+    {"admin", "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"}, // "password"
+    {"user", "12dff74e2fe2cf1c172e0a77a7d04217f8d51e4d0c37923f8f281eb61b90e6f8"}   // example
+};
 
 std::map<std::string, bool> protected_files = {
     {"secret.txt", true},
-    {"confidential.dat", true}};
+    {"confidential.dat", true}
+};
 
 std::mutex client_mutex;
 std::ofstream log_file("server.log", std::ios::app);
 
-// Функция для получения текущего времени в формате строки
 std::string get_current_time()
 {
     std::time_t now = std::time(nullptr);
@@ -40,7 +41,7 @@ void log(const std::string &message)
 {
     std::lock_guard<std::mutex> lock(client_mutex);
     log_file << "[" << get_current_time() << "] " << message << std::endl;
-    log_file.flush(); // Сразу записываем в файл
+    log_file.flush();
 }
 
 std::string sha256(const std::string &str)
@@ -49,8 +50,8 @@ std::string sha256(const std::string &str)
     SHA256(reinterpret_cast<const unsigned char *>(str.c_str()), str.size(), hash);
 
     std::ostringstream oss;
-    for (unsigned char c : hash)
-        oss << std::hex << (int)c;
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i)
+        oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
 
     return oss.str();
 }
@@ -59,13 +60,9 @@ bool authenticate(const std::string &username, const std::string &password)
 {
     bool auth_success = users.count(username) && users[username] == sha256(password);
     if (auth_success)
-    {
         log("Authentication successful for user: " + username);
-    }
     else
-    {
         log("Authentication failed for user: " + username);
-    }
     return auth_success;
 }
 
@@ -86,9 +83,8 @@ void send_file_stream(int sock, const std::string &filename)
 
     char buffer[4096];
     while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0)
-    {
         send(sock, buffer, file.gcount(), 0);
-    }
+
     log("File sent successfully: " + filename);
 }
 
@@ -117,7 +113,10 @@ void handle_client(int sock, SSL *ssl)
         if (first_line)
         {
             first_line = false;
-            filename = line.substr(4, line.find(' ', 4) - 4);
+            size_t start = line.find(' ') + 1;
+            size_t end = line.find(' ', start);
+            filename = line.substr(start, end - start);
+            if (filename[0] == '/') filename = filename.substr(1);
             log("Requested file: " + filename);
         }
         else if (line.rfind("Auth: ", 0) == 0)
@@ -154,15 +153,13 @@ SSL_CTX *initialize_ssl()
     if (!ctx)
     {
         log("SSL_CTX_new() failed");
-        std::cerr << "SSL_CTX_new() error\n";
         ERR_print_errors_fp(stderr);
         exit(EXIT_FAILURE);
     }
 
     if (!SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM))
     {
-        log("Failed to load certificate file: cert.pem");
-        std::cerr << "Failed to load certificate file\n";
+        log("Failed to load certificate file");
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(ctx);
         exit(EXIT_FAILURE);
@@ -170,119 +167,74 @@ SSL_CTX *initialize_ssl()
 
     if (!SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM))
     {
-        log("Failed to load private key file: key.pem");
-        std::cerr << "Failed to load private key file\n";
+        log("Failed to load private key file");
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(ctx);
         exit(EXIT_FAILURE);
     }
 
-    if (!SSL_CTX_check_private_key(ctx))
-    {
-        log("Private key does not match the certificate public key");
-        std::cerr << "Private key does not match the certificate public key\n";
-        ERR_print_errors_fp(stderr);
-        SSL_CTX_free(ctx);
-        exit(EXIT_FAILURE);
-    }
-
-    log("SSL context initialized successfully");
     return ctx;
 }
 
 int main()
 {
-    // Проверка открытия файла логов
-    if (!log_file.is_open())
-    {
-        std::cerr << "Failed to open log file\n";
-        return 1;
-    }
-
-    log("Starting server...");
-
     SSL_CTX *ctx = initialize_ssl();
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0)
+    if (server_fd == -1)
     {
-        log("socket() error: " + std::to_string(errno));
-        std::cerr << "socket() error\n";
-        return 1;
+        perror("socket failed");
+        exit(EXIT_FAILURE);
     }
 
-    // Установка опции SO_REUSEADDR для повторного использования порта
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    sockaddr_in addr{};
+    sockaddr_in addr;
     addr.sin_family = AF_INET;
+    addr.sin_port = htons(4433);
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(8443); // Используем порт 8443 вместо 443, чтобы не требовать прав root
-    if (bind(server_fd, (sockaddr *)&addr, sizeof(addr)) < 0)
+
+    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
-        log("bind() error: " + std::to_string(errno));
-        std::cerr << "bind() error\n";
-        return 1;
-    }
-    if (listen(server_fd, 5) < 0)
-    {
-        log("listen() error: " + std::to_string(errno));
-        std::cerr << "listen() error\n";
-        return 1;
+        perror("bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
     }
 
-    log("Secure server started on port 8443");
-    std::cout << "Secure server started on port 8443\n";
+    if (listen(server_fd, SOMAXCONN) < 0)
+    {
+        perror("listen failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
 
-    std::vector<std::thread> threads;
+    log("Server started on port 4433");
 
     while (true)
     {
-        int sock = accept(server_fd, nullptr, nullptr);
-        if (sock < 0)
+        sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+        if (client_fd < 0)
         {
-            log("accept() error: " + std::to_string(errno));
-            std::cerr << "accept() error\n";
+            perror("accept failed");
             continue;
         }
-
-        log("New client connected, socket fd: " + std::to_string(sock));
 
         SSL *ssl = SSL_new(ctx);
-        SSL_set_fd(ssl, sock);
+        SSL_set_fd(ssl, client_fd);
+
         if (SSL_accept(ssl) <= 0)
         {
-            log("SSL_accept() failed");
+            log("SSL handshake failed");
             ERR_print_errors_fp(stderr);
             SSL_free(ssl);
-            close(sock);
+            close(client_fd);
             continue;
         }
 
-        log("SSL handshake completed for client, socket fd: " + std::to_string(sock));
-
-        {
-            std::lock_guard<std::mutex> lock(client_mutex);
-            threads.emplace_back(handle_client, sock, ssl);
-        }
-
-        // Очистка завершенных потоков
-        threads.erase(
-            std::remove_if(threads.begin(), threads.end(),
-                           [](std::thread &t)
-                           { return !t.joinable(); }),
-            threads.end());
+        std::thread(handle_client, client_fd, ssl).detach();
     }
 
-    for (auto &thread : threads)
-    {
-        if (thread.joinable())
-            thread.join();
-    }
-
-    SSL_CTX_free(ctx);
     close(server_fd);
-    log("Server shutdown");
+    SSL_CTX_free(ctx);
     return 0;
 }
