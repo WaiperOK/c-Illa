@@ -1,6 +1,11 @@
+#include <iostream>
+#include <cstring>
 #include <cerrno>
 #include <chrono>
 #include <thread>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 int accept_with_retry(int server_fd)
 {
@@ -20,8 +25,7 @@ int accept_with_retry(int server_fd)
                 std::cerr << "Max retry attempts reached, skipping...\n";
                 return -1;
             }
-            std::cerr << "Temporary network issue, retrying...\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Короткая пауза перед повторной попыткой
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
         else
@@ -37,7 +41,7 @@ int main()
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
     {
-        std::cerr << "socket() error\n";
+        std::cerr << "socket() error: " << strerror(errno) << "\n";
         return 1;
     }
 
@@ -45,26 +49,30 @@ int main()
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(4000);
+
     if (bind(server_fd, (sockaddr *)&addr, sizeof(addr)) < 0)
     {
-        std::cerr << "bind() error\n";
+        std::cerr << "bind() error: " << strerror(errno) << "\n";
+        close(server_fd);
         return 1;
     }
+
     if (listen(server_fd, 5) < 0)
     {
-        std::cerr << "listen() error\n";
+        std::cerr << "listen() error: " << strerror(errno) << "\n";
+        close(server_fd);
         return 1;
     }
+
     std::cout << "Server started on port 4000\n";
 
     while (true)
     {
         int sock = accept_with_retry(server_fd);
         if (sock < 0)
-            continue; // Пропускаем ошибочное соединение, но продолжаем работу
+            continue;
 
         std::cout << "Client connected\n";
-        // Обработка запроса...
         close(sock);
     }
 
